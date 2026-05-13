@@ -30,6 +30,82 @@ html, body {
   text-align: center;
 }
 
+/* --- Hero wrapper for title + floating bubbles --- */
+.hero {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: min(520px, 88vw);
+  height: min(300px, 50vh);
+}
+
+/* --- Project bubbles --- */
+.bubble {
+  position: absolute;
+  padding: 0.45rem 0.9rem;
+  background: rgba(8, 14, 20, 0.55);
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 999px;
+  color: rgba(255,255,255,0.70);
+  text-decoration: none;
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  pointer-events: all;
+  transition: background 0.25s, border-color 0.25s, color 0.25s, transform 0.2s;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+}
+.bubble:hover {
+  background: rgba(15, 25, 35, 0.80);
+  border-color: rgba(80, 200, 170, 0.45);
+  color: rgba(255,255,255,0.95);
+  transform: scale(1.06);
+}
+
+/* Triangle positions — top center, bottom-left, bottom-right.
+   bubble-a uses translateX(-50%) to center horizontally; the float
+   keyframes carry that offset throughout so it doesn't snap on each frame. */
+.bubble-a { top: 8%;    left: 50%;  }
+.bubble-b { bottom: 8%; left: 8%;   }
+.bubble-c { bottom: 8%; right: 8%;  }
+
+/* Floating animations — gentle drift, small amplitude to stay near the text */
+@keyframes float-a {
+  0%, 100% { transform: translateX(-50%) translate(0,    0);   }
+  40%       { transform: translateX(-50%) translate(6px,  -10px); }
+  70%       { transform: translateX(-50%) translate(-4px, -6px);  }
+}
+@keyframes float-b {
+  0%, 100% { transform: translate(0,   0);    }
+  35%       { transform: translate(-7px, 8px);  }
+  65%       { transform: translate(5px,  10px); }
+}
+@keyframes float-c {
+  0%, 100% { transform: translate(0,  0);   }
+  30%       { transform: translate(5px, 9px);  }
+  60%       { transform: translate(-6px, 4px); }
+}
+.bubble-a { animation: float-a 9s  ease-in-out infinite;      }
+.bubble-b { animation: float-b 11s ease-in-out infinite 1.5s; }
+.bubble-c { animation: float-c 8s  ease-in-out infinite 3s;   }
+
+/* Pause float on hover so it doesn't fight the scale transition */
+.bubble:hover { animation-play-state: paused; }
+
+/* Mobile: stack below title instead of floating around it */
+@media (max-width: 500px) {
+  .hero {
+    flex-direction: column;
+    height: auto;
+    gap: 1.5rem;
+    padding: 0 1rem;
+  }
+  .bubble { position: static; animation: none; }
+}
+
 h1 {
   font-size: clamp(2.75rem, 9vw, 7rem);
   font-weight: 700;
