@@ -1,5 +1,8 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
 import Meyda from 'https://cdn.jsdelivr.net/npm/meyda@5.6.3/+esm';
+import { presets, DEFAULT_PRESET } from './presets.js';
+
+const preset = presets[DEFAULT_PRESET];
 
 // ---------- Three.js scene ----------
 const canvas = document.getElementById('bg');
@@ -16,20 +19,26 @@ const PATH_TTL = 1.6;       // seconds before a sample fully fades
 
 const uniforms = {
   iTime:       { value: 0 },
-  iResolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
-  iMouse:      { value: new THREE.Vector2(window.innerWidth / 2, window.innerHeight / 2) },
+  iResolution:  { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
+  iPixelRatio:  { value: Math.min(window.devicePixelRatio, 2) },
+  iMouse:       { value: new THREE.Vector2(window.innerWidth / 2, window.innerHeight / 2) },
   iMousePath:    { value: Array.from({ length: PATH_LEN }, () => new THREE.Vector2(0, 0)) },
   iMousePathAge: { value: new Array(PATH_LEN).fill(PATH_TTL + 1) },
   iPathTtl:      { value: PATH_TTL },
-  iSubFloor:    { value: 0.60 },
-  iSubStrength: { value: 0.15 },
-  iSubExp:      { value: 2.5  },
+  iSubFloor:    { value: preset.iSubFloor    },
+  iSubStrength: { value: preset.iSubStrength },
+  iSubExp:      { value: preset.iSubExp      },
   iSubBass:    { value: 0 }, // 0-130Hz, heavily smoothed — drives slow large-scale motion
   iBass:       { value: 0 }, // 130-345Hz — drives subtle pulse
   iMid:        { value: 0 },
   iTreble:     { value: 0 },
-  iHarmonic:   { value: new THREE.Vector2(0, 0) }, // tonal center (smoothed circular mean of chroma)
-  iTransient:  { value: 0 },                       // 0..1 impulse on hi-band onsets
+  iHarmonic:    { value: new THREE.Vector2(0, 0) },
+  iTransient:   { value: 0 },
+  iHarmRotation:      { value: preset.iHarmRotation      },
+  iHarmSensLow:       { value: preset.iHarmSensLow       },
+  iHarmSensHigh:      { value: preset.iHarmSensHigh      },
+  iHarmSat:           { value: preset.iHarmSat           },
+  iTransientStrength: { value: preset.iTransientStrength },
 };
 
 const vertexShader = `
@@ -46,6 +55,7 @@ const fragmentShader = `
   varying vec2 vUv;
   uniform float iTime;
   uniform vec2 iResolution;
+  uniform float iPixelRatio;
   uniform vec2 iMouse;
   uniform vec2 iMousePath[PATH_LEN];
   uniform float iMousePathAge[PATH_LEN];
@@ -59,6 +69,11 @@ const fragmentShader = `
   uniform float iTreble;
   uniform vec2 iHarmonic;
   uniform float iTransient;
+  uniform float iTransientStrength;
+  uniform float iHarmRotation;
+  uniform float iHarmSensLow;
+  uniform float iHarmSensHigh;
+  uniform float iHarmSat;
 
   float hash(vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
@@ -95,10 +110,10 @@ const fragmentShader = `
     return col * c + cross(k, col) * s + k * dot(k, col) * (1.0 - c);
   }
 
-  // Convert pixel-space coord to the same aspect-corrected, centered space
-  // we use for the noise field (so the trail lines up visually).
-  vec2 pxToP(vec2 px) {
-    vec2 r = px / iResolution - 0.5;
+  // Convert CSS-pixel coord to physical-normalized centered space.
+  // gl_FragCoord is physical pixels; iResolution is CSS pixels; iPixelRatio bridges them.
+  vec2 pxToP(vec2 pxCSS) {
+    vec2 r = pxCSS / iResolution - 0.5;
     r.y = -r.y;
     r.x *= iResolution.x / iResolution.y;
     return r;
@@ -151,17 +166,18 @@ const fragmentShader = `
   }
 
   void main() {
-    vec2 uv = gl_FragCoord.xy / iResolution.xy;
+    // p: physical-normalized [0..1] UV, correct for cursor/trail matching.
+    // pScene: scaled by pixelRatio to preserve noise visual density regardless of DPI.
+    vec2 uv = gl_FragCoord.xy / (iResolution.xy * iPixelRatio);
     vec2 p = uv - 0.5;
     p.x *= iResolution.x / iResolution.y;
+    vec2 pScene = p * iPixelRatio;
     vec2 m = pxToP(iMouse);
 
     // --- Trail field, computed early so we can deform the noise itself ---
-    // Very slow, large-scale fractal wobble — adds an organic edge without
-    // introducing high-frequency jitter.
     vec2 wob = vec2(
-      fbm(p * 3.5 + iTime * 0.25),
-      fbm(p * 3.5 + vec2(7.3, 2.9) + iTime * 0.25)
+      fbm(pScene * 3.5 + iTime * 0.25),
+      fbm(pScene * 3.5 + vec2(7.3, 2.9) + iTime * 0.25)
     ) - 0.5;
     vec2 pTrail = p + wob * 0.030;
 
@@ -178,7 +194,8 @@ const fragmentShader = `
     // through the loudest drops with no upper cap.
     float bassDrive = pow(max(0.0, iSubBass - iSubFloor), iSubExp);
     float bassBreath = 1.0 + bassDrive * iSubStrength;
-    vec2 pNoise = (p + awayDir * pushAmt) * bassBreath;
+    // pNoise: cursor displacement applied in cursor-space (p), then scaled to scene-space
+    vec2 pNoise = (pScene + awayDir * pushAmt * iPixelRatio) * bassBreath;
 
     // --- Ambient flow, sampled at the displaced coord ---
     float t = iTime * 0.05;
@@ -187,25 +204,19 @@ const fragmentShader = `
       fbm(pNoise * 1.4 + t * 0.3),
       fbm(pNoise * 1.4 + vec2(5.2, 1.3) + t * 0.25)
     );
-
     vec2 warp = 2.5 * q;
-
     vec2 r = vec2(
       fbm(pNoise + warp + vec2(1.7, 9.2) + t * 0.4),
       fbm(pNoise + warp + vec2(8.3, 2.8) + t * 0.35)
     );
-
     float n = fbm(pNoise + 3.0 * r);
 
     // --- Harmonic-driven hue rotation around the blue/green baseline ---
     // Angle of the chroma circular mean → significant hue rotation across the
     // full color wheel. Magnitude controls how strongly we deviate from baseline.
     float harmAngle = atan(iHarmonic.y, iHarmonic.x);
-    // Aggressive curve: typical dub-techno chroma magnitudes are ~0.04-0.15,
-    // so we want to saturate the response within that range.
-    float harmStrength = smoothstep(0.005, 0.10, length(iHarmonic));
-    // Up to ~140° rotation — full palette excursion through purple/amber/teal
-    float hueOffset = harmAngle * 2.4 * harmStrength;
+    float harmStrength = smoothstep(iHarmSensLow, iHarmSensHigh, length(iHarmonic));
+    float hueOffset = harmAngle * iHarmRotation * harmStrength;
 
     // Palette: near-black → deep blue → teal → soft green, hue-shifted by harmonics
     vec3 cBlack = vec3(0.0, 0.015, 0.03);
@@ -217,9 +228,8 @@ const fragmentShader = `
     col      = mix(col,    cTeal,  smoothstep(0.55, 0.78, n) * (0.45 + iMid * 0.60));
     col      = mix(col,    cGreen, smoothstep(0.78, 0.95, n) * (0.25 + iTreble * 0.85));
 
-    // Saturation lift on strongly tonal content — pads feel more vivid, washes stay muted
     float harmLum = dot(col, vec3(0.299, 0.587, 0.114));
-    col = mix(vec3(harmLum), col, 1.0 + harmStrength * 0.45);
+    col = mix(vec3(harmLum), col, 1.0 + harmStrength * iHarmSat);
 
     // --- The "cut" — wide soft darkening, never fully obscures the smoke ---
     float cutCenter = smoothstep(0.02, 0.85, trail);
@@ -233,17 +243,16 @@ const fragmentShader = `
     float dToMouse = length(p - m);
     col += vec3(0.35, 0.65, 0.58) * exp(-dToMouse * 95.0) * 0.04;
 
-    // Percussion-driven brightness — subtle bloom on hat/transient hits
-    col *= 0.86 + iTransient * 0.12 + iTreble * 0.06;
-
-    // Treble shimmer
+    // Base brightness + treble shimmer (always on)
+    col *= 0.86 + iTreble * 0.06;
     float shimmer = (hash(gl_FragCoord.xy + iTime * 60.0) - 0.5) * iTreble * 0.06;
     col += shimmer;
 
-    // Transient pop — sharp brief flash + sparkle on hat/perc onsets
-    col += vec3(0.20, 0.55, 0.50) * iTransient * 0.10;
-    float sparkle = (hash(gl_FragCoord.xy + iTime * 120.0) - 0.5) * iTransient * 0.18;
+    // Hi-hat / transient flash — gated by iTransientStrength (0 = off)
+    col += vec3(0.20, 0.55, 0.50) * iTransient * iTransientStrength * 0.10;
+    float sparkle = (hash(gl_FragCoord.xy + iTime * 120.0) - 0.5) * iTransient * iTransientStrength * 0.18;
     col += sparkle;
+    col *= 1.0 + iTransient * iTransientStrength * 0.12;
 
     // Vignette
     col *= 1.0 - 0.35 * dot(uv - 0.5, uv - 0.5);
@@ -259,6 +268,7 @@ scene.add(quad);
 window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
   uniforms.iResolution.value.set(window.innerWidth, window.innerHeight);
+  uniforms.iPixelRatio.value = renderer.getPixelRatio();
 });
 
 // ---------- Mouse tracking + path history ----------
@@ -297,7 +307,7 @@ function updatePathUniforms() {
   const pr = renderer.getPixelRatio();
   for (let i = 0; i < PATH_LEN; i++) {
     if (i < path.length) {
-      uniforms.iMousePath.value[i].set(path[i].x * pr, path[i].y * pr);
+      uniforms.iMousePath.value[i].set(path[i].x, path[i].y);
       uniforms.iMousePathAge.value[i] = now - path[i].time;
     } else {
       // Stale slot — position doesn't matter since age >= TTL kills the contribution
@@ -313,10 +323,14 @@ const npIcon = document.getElementById('npIcon');
 const nowplaying = document.getElementById('nowplaying');
 const startOverlay = document.getElementById('startOverlay');
 
-let audioCtx, analyser, dataArray, meydaAnalyzer;
+let audioCtx, analyser, dataArray, prevDataArray, meydaAnalyzer;
 let latestFeatures = null;
 let subBassSmoothed = 0, bassSmoothed = 0, midSmoothed = 0, trebleSmoothed = 0;
 let harmonicX = 0, harmonicY = 0;
+// Smoothing setting 0..1 where 1 = maximum lag. Exponential map gives a
+// much wider range at the slow end: 0→0.5 (fast), 0.5→0.022, 1.0→0.001 (~10s TC).
+let harmSmoothingSetting = preset.harmSmoothingSetting;
+const harmAlpha = () => 0.5 * Math.pow(0.002, harmSmoothingSetting);
 let transientLevel = 0;
 let fluxBaseline = 0; // adaptive baseline of spectral flux
 
@@ -325,6 +339,7 @@ const SUB_BASS_START = 0,  SUB_BASS_END = 3;    // ~0-130Hz    (deep sub + kick)
 const BASS_START     = 3,  BASS_END     = 8;    // ~130-345Hz  (body)
 const MID_START      = 8,  MID_END      = 80;   // ~345-3.4kHz
 const TREB_START     = 80, TREB_END     = 250;  // ~3.4-11kHz
+const HI_FLUX_START  = 100, HI_FLUX_END = 220;  // ~4.3-9.5kHz (hats/perc)
 
 function initAudio() {
   if (audioCtx) return;
@@ -336,17 +351,20 @@ function initAudio() {
   source.connect(analyser);
   analyser.connect(audioCtx.destination);
   dataArray = new Uint8Array(analyser.frequencyBinCount);
+  prevDataArray = new Uint8Array(analyser.frequencyBinCount);
 
-  // Meyda: chroma (pitch class energies) + spectral flux (transients).
-  // Callback fires every bufferSize samples (~43Hz at 44.1k/1024).
+  // Meyda: start AFTER context is running, not before.
+  // We defer to the next microtask so resume() has already been called.
   meydaAnalyzer = Meyda.createMeydaAnalyzer({
     audioContext: audioCtx,
     source,
     bufferSize: 1024,
-    featureExtractors: ['chroma', 'spectralFlux'],
-    callback: features => { latestFeatures = features; },
+    featureExtractors: ['chroma'],
+    callback: features => {
+      if (!latestFeatures && DEV) console.log('[Meyda] first callback, chroma:', features?.chroma);
+      latestFeatures = features;
+    },
   });
-  meydaAnalyzer.start();
 }
 
 function avgBins(start, end) {
@@ -396,23 +414,24 @@ function readBands() {
         total += e;
       }
       if (total > 0) { cx /= total; cy /= total; }
-      // Moderate smoothing — slow enough to read as chord-paced motion,
-      // fast enough that you can see it shift within a phrase.
-      harmonicX += (cx - harmonicX) * 0.10;
-      harmonicY += (cy - harmonicY) * 0.10;
+      const a = harmAlpha();
+      harmonicX += (cx - harmonicX) * a;
+      harmonicY += (cy - harmonicY) * a;
     }
 
-    // Spectral flux → onset detection via adaptive baseline
-    const flux = latestFeatures.spectralFlux;
-    if (typeof flux === 'number' && isFinite(flux)) {
-      fluxBaseline += (flux - fluxBaseline) * 0.04;
-      const onset = Math.max(0, flux - fluxBaseline * 1.6);
-      // Fast attack, fast decay — transient pop, not a swell
-      transientLevel = Math.max(transientLevel * 0.78, Math.min(1.0, onset * 3.0));
-    } else {
-      transientLevel *= 0.78;
-    }
   }
+
+  // Spectral flux from our own analyser — high band only (hats/perc)
+  let flux = 0;
+  for (let i = HI_FLUX_START; i < HI_FLUX_END; i++) {
+    const diff = dataArray[i] - prevDataArray[i];
+    if (diff > 0) flux += diff;
+  }
+  const fluxNorm = flux / ((HI_FLUX_END - HI_FLUX_START) * 255);
+  fluxBaseline += (fluxNorm - fluxBaseline) * 0.04;
+  const onset = Math.max(0, fluxNorm - fluxBaseline * 1.6);
+  transientLevel = Math.max(transientLevel * 0.78, Math.min(1.0, onset * 3.0));
+  prevDataArray.set(dataArray);
 }
 
 // ---------- Player controls ----------
@@ -430,6 +449,9 @@ async function startPlayback() {
   try {
     if (audioCtx.state === 'suspended') await audioCtx.resume();
     await audio.play();
+    // Start Meyda only after context is definitely running
+    meydaAnalyzer.start();
+    if (DEV) console.log('[Meyda] started, context state:', audioCtx.state);
   } catch (err) {
     console.error('Playback failed:', err);
   }
@@ -440,7 +462,10 @@ audio.addEventListener('pause', updatePlayState);
 
 npBtn.addEventListener('click', async () => {
   initAudio();
-  if (audioCtx.state === 'suspended') await audioCtx.resume();
+  if (audioCtx.state === 'suspended') {
+    await audioCtx.resume();
+    meydaAnalyzer.start();
+  }
   if (audio.paused) await audio.play(); else audio.pause();
 });
 
@@ -449,16 +474,113 @@ startOverlay.addEventListener('click', async () => {
   startOverlay.classList.add('hidden');
 });
 
+// ---------- Debug panel (localhost only) ----------
+const DEV = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+const harmPanel = document.getElementById('debug-harm');
+if (!DEV) harmPanel.style.display = 'none';
+
+if (DEV) {
+  const LS_KEY = 'ww:debug:harm';
+
+  function loadDebugSettings() {
+    try { return JSON.parse(localStorage.getItem(LS_KEY)) || {}; } catch { return {}; }
+  }
+  function saveDebugSettings(patch) {
+    try {
+      localStorage.setItem(LS_KEY, JSON.stringify({ ...loadDebugSettings(), ...patch }));
+    } catch { /* quota or private browsing */ }
+  }
+
+  const saved = loadDebugSettings();
+
+  const harmSliders = [
+    ['s-hrot', 'v-hrot', 'iHarmRotation',      v => v.toFixed(2)],
+    ['s-hslo', 'v-hslo', 'iHarmSensLow',        v => v.toFixed(3)],
+    ['s-hshi', 'v-hshi', 'iHarmSensHigh',       v => v.toFixed(3)],
+    ['s-hsat', 'v-hsat', 'iHarmSat',            v => v.toFixed(2)],
+    ['s-tstr', 'v-tstr', 'iTransientStrength',  v => v.toFixed(2)],
+  ];
+
+  // Lag slider refs needed by reset button
+  const smoEl  = document.getElementById('s-hsmo');
+  const smoLbl = document.getElementById('v-hsmo');
+
+  function applyPreset() {
+    for (const [sliderId, labelId, uniform, fmt] of harmSliders) {
+      const el  = document.getElementById(sliderId);
+      const lbl = document.getElementById(labelId);
+      const v   = preset[uniform] ?? 0;
+      el.value  = v;
+      uniforms[uniform].value = v;
+      lbl.textContent = fmt(v);
+    }
+    harmSmoothingSetting = preset.harmSmoothingSetting;
+    smoEl.value  = harmSmoothingSetting;
+    smoLbl.textContent = harmSmoothingSetting.toFixed(2);
+  }
+
+  function applySliderValue(sliderId, labelId, uniform, fmt, v) {
+    const el  = document.getElementById(sliderId);
+    const lbl = document.getElementById(labelId);
+    el.value  = v;
+    uniforms[uniform].value = v;
+    lbl.textContent = fmt(v);
+  }
+
+  // Init: preset as base, localStorage overrides on top
+  applyPreset();
+  for (const [sliderId, labelId, uniform, fmt] of harmSliders) {
+    if (sliderId in saved) applySliderValue(sliderId, labelId, uniform, fmt, saved[sliderId]);
+  }
+  if ('s-hsmo' in saved) {
+    harmSmoothingSetting = saved['s-hsmo'];
+    smoEl.value  = harmSmoothingSetting;
+    smoLbl.textContent = harmSmoothingSetting.toFixed(2);
+  }
+
+  // Live changes
+  for (const [sliderId, labelId, uniform, fmt] of harmSliders) {
+    document.getElementById(sliderId).addEventListener('input', () => {
+      const v = parseFloat(document.getElementById(sliderId).value);
+      uniforms[uniform].value = v;
+      document.getElementById(labelId).textContent = fmt(v);
+      saveDebugSettings({ [sliderId]: v });
+    });
+  }
+  smoEl.addEventListener('input', () => {
+    harmSmoothingSetting = parseFloat(smoEl.value);
+    smoLbl.textContent   = harmSmoothingSetting.toFixed(2);
+    saveDebugSettings({ 's-hsmo': harmSmoothingSetting });
+  });
+
+  // Reset: wipe cache and re-apply preset immediately, no reload needed
+  document.getElementById('btn-preset').addEventListener('click', () => {
+    localStorage.removeItem(LS_KEY);
+    applyPreset();
+  });
+}
+
+// ---------- Harmonic display (throttled) ----------
+let lastHarmDisplay = 0;
+function updateHarmDisplay() {
+  const now = performance.now();
+  if (now - lastHarmDisplay < 250) return;
+  lastHarmDisplay = now;
+  const mag = Math.hypot(harmonicX, harmonicY);
+  document.getElementById('v-hmag').textContent = mag.toFixed(3);
+  document.getElementById('v-hang').textContent = Math.atan2(harmonicY, harmonicX).toFixed(2);
+  document.getElementById('v-tlvl').textContent = transientLevel.toFixed(3);
+}
+
 // ---------- Render loop ----------
 const clock = new THREE.Clock();
 function tick() {
   uniforms.iTime.value += clock.getDelta();
 
-  // Smooth cursor
+  // Smooth cursor — pass CSS coords; shader handles pixel ratio internally
   smoothMouse.x += (mouse.x - smoothMouse.x) * 0.08;
   smoothMouse.y += (mouse.y - smoothMouse.y) * 0.08;
-  const pr = renderer.getPixelRatio();
-  uniforms.iMouse.value.set(smoothMouse.x * pr, smoothMouse.y * pr);
+  uniforms.iMouse.value.set(smoothMouse.x, smoothMouse.y);
 
   updatePathUniforms();
 
@@ -468,6 +590,7 @@ function tick() {
   uniforms.iMid.value       = midSmoothed;
   uniforms.iTreble.value    = trebleSmoothed;
   uniforms.iHarmonic.value.set(harmonicX, harmonicY);
+  if (DEV) updateHarmDisplay();
   uniforms.iTransient.value = transientLevel;
 
   renderer.render(scene, camera);
