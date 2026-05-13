@@ -9,10 +9,17 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 const scene = new THREE.Scene();
 const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
+const PATH_LEN = 16;
+const PATH_MIN_PX = 7;      // smaller = denser polyline, smoother joints
+const PATH_TTL = 1.6;       // seconds before a sample fully fades
+
 const uniforms = {
   iTime:       { value: 0 },
   iResolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
   iMouse:      { value: new THREE.Vector2(window.innerWidth / 2, window.innerHeight / 2) },
+  iMousePath:    { value: Array.from({ length: PATH_LEN }, () => new THREE.Vector2(0, 0)) },
+  iMousePathAge: { value: new Array(PATH_LEN).fill(PATH_TTL + 1) },
+  iPathTtl:      { value: PATH_TTL },
   iSubBass:    { value: 0 }, // 0-130Hz, heavily smoothed — drives slow large-scale motion
   iBass:       { value: 0 }, // 130-345Hz — drives subtle pulse
   iMid:        { value: 0 },
@@ -29,10 +36,14 @@ const vertexShader = `
 
 const fragmentShader = `
   precision highp float;
+  #define PATH_LEN 16
   varying vec2 vUv;
   uniform float iTime;
   uniform vec2 iResolution;
   uniform vec2 iMouse;
+  uniform vec2 iMousePath[PATH_LEN];
+  uniform float iMousePathAge[PATH_LEN];
+  uniform float iPathTtl;
   uniform float iSubBass;
   uniform float iBass;
   uniform float iMid;
@@ -64,33 +75,100 @@ const fragmentShader = `
     return v;
   }
 
+  // Convert pixel-space coord to the same aspect-corrected, centered space
+  // we use for the noise field (so the trail lines up visually).
+  vec2 pxToP(vec2 px) {
+    vec2 r = px / iResolution - 0.5;
+    r.y = -r.y;
+    r.x *= iResolution.x / iResolution.y;
+    return r;
+  }
+
+  float sdSegment(vec2 p, vec2 a, vec2 b) {
+    vec2 pa = p - a;
+    vec2 ba = b - a;
+    float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
+    return length(pa - ba * h);
+  }
+
+  // Returns (intensity, dirX, dirY).
+  //   intensity = max-pooled exp falloff to nearest segment (the visible trail)
+  //   dir       = smoothly-blended unit-ish vector pointing away from the path,
+  //               averaged across all segments by an exp weight. This avoids the
+  //               direction "snapping" at segment vertices that produced visible
+  //               kinks in the carved channel.
+  vec3 trailField(vec2 p) {
+    float intensity = 0.0;
+    vec2 wDir = vec2(0.0);
+    float wSum = 0.0;
+    for (int i = 0; i < PATH_LEN - 1; i++) {
+      vec2 a = pxToP(iMousePath[i]);
+      vec2 b = pxToP(iMousePath[i + 1]);
+      float age = max(iMousePathAge[i], iMousePathAge[i + 1]);
+      // Smoothstep fade for a gentler tail
+      float fade = 1.0 - smoothstep(0.0, iPathTtl, age);
+
+      vec2 pa = p - a;
+      vec2 ba = b - a;
+      float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
+      vec2 cp = a + ba * h;
+      vec2 toP = p - cp;
+      float d = length(toP);
+
+      // Visible trail — wide, soft falloff for a "smoke parting" feel
+      float k = mix(17.0, 11.0, fade);
+      intensity = max(intensity, exp(-d * k) * fade);
+
+      // Direction blend uses an even wider kernel — keeps the displacement
+      // direction smooth and gradual across the whole influence area.
+      float dirW = exp(-d * 5.0) * fade;
+      vec2 unit = toP / max(d, 1e-4);
+      wDir += unit * dirW;
+      wSum += dirW;
+    }
+    vec2 dir = wSum > 0.0 ? wDir / wSum : vec2(0.0);
+    return vec3(intensity, dir);
+  }
+
   void main() {
     vec2 uv = gl_FragCoord.xy / iResolution.xy;
     vec2 p = uv - 0.5;
     p.x *= iResolution.x / iResolution.y;
+    vec2 m = pxToP(iMouse);
 
-    // Mouse position in same aspect-corrected space (y flipped: canvas vs gl)
-    vec2 m = iMouse / iResolution - 0.5;
-    m.y = -m.y;
-    m.x *= iResolution.x / iResolution.y;
+    // --- Trail field, computed early so we can deform the noise itself ---
+    // Very slow, large-scale fractal wobble — adds an organic edge without
+    // introducing high-frequency jitter.
+    vec2 wob = vec2(
+      fbm(p * 3.5 + iTime * 0.25),
+      fbm(p * 3.5 + vec2(7.3, 2.9) + iTime * 0.25)
+    ) - 0.5;
+    vec2 pTrail = p + wob * 0.030;
 
-    // Pure ambient flow — geometry never reacts to audio, so it can't jerk.
-    // Audio only touches color/brightness below.
+    vec3 tf = trailField(pTrail);
+    float trail = tf.x;
+    vec2 awayDir = tf.yz; // already smoothly averaged across segments
+
+    // Wider but gentle push — takes advantage of the broader influence area
+    float pushAmt = smoothstep(0.02, 0.55, trail) * 0.20;
+    vec2 pNoise = p + awayDir * pushAmt;
+
+    // --- Ambient flow, sampled at the displaced coord ---
     float t = iTime * 0.05;
 
     vec2 q = vec2(
-      fbm(p * 1.4 + t * 0.3),
-      fbm(p * 1.4 + vec2(5.2, 1.3) + t * 0.25)
+      fbm(pNoise * 1.4 + t * 0.3),
+      fbm(pNoise * 1.4 + vec2(5.2, 1.3) + t * 0.25)
     );
 
     vec2 warp = 2.5 * q;
 
     vec2 r = vec2(
-      fbm(p + warp + vec2(1.7, 9.2) + t * 0.4),
-      fbm(p + warp + vec2(8.3, 2.8) + t * 0.35)
+      fbm(pNoise + warp + vec2(1.7, 9.2) + t * 0.4),
+      fbm(pNoise + warp + vec2(8.3, 2.8) + t * 0.35)
     );
 
-    float n = fbm(p + 3.0 * r);
+    float n = fbm(pNoise + 3.0 * r);
 
     // Palette: near-black → deep blue → teal → soft green (relaxed)
     vec3 cBlack = vec3(0.0, 0.015, 0.03);
@@ -99,21 +177,30 @@ const fragmentShader = `
     vec3 cGreen = vec3(0.18, 0.65, 0.45);
 
     vec3 col = mix(cBlack, cBlue,  smoothstep(0.25, 0.55, n));
-    col      = mix(col,    cTeal,  smoothstep(0.55, 0.78, n) * (0.65 + iMid * 0.12));
-    col      = mix(col,    cGreen, smoothstep(0.78, 0.95, n) * (0.5 + iTreble * 0.18));
+    col      = mix(col,    cTeal,  smoothstep(0.55, 0.78, n) * (0.45 + iMid * 0.60));
+    col      = mix(col,    cGreen, smoothstep(0.78, 0.95, n) * (0.25 + iTreble * 0.85));
 
-    // --- Localized cursor effect ---
+    // --- The "cut" — wide soft darkening, never fully obscures the smoke ---
+    float cutCenter = smoothstep(0.02, 0.85, trail);
+    col = mix(col, cBlack, cutCenter * 0.28);
+
+    // Broader, softer rim highlight — gentle gradient rather than a defined line.
+    float edge = smoothstep(0.15, 0.65, trail) - smoothstep(0.65, 0.95, trail);
+    col += vec3(0.15, 0.48, 0.42) * edge * 0.22;
+
+    // Faint pinpoint at the live cursor so a stationary pointer remains visible.
     float dToMouse = length(p - m);
-    float cursorCore = exp(-dToMouse * 18.0);
-    float cursorHalo = exp(-dToMouse * 6.0);
-    col += vec3(0.55, 1.0, 0.85) * cursorCore * 0.55;
-    col += vec3(0.10, 0.55, 0.65) * cursorHalo * 0.20;
+    col += vec3(0.35, 0.65, 0.58) * exp(-dToMouse * 95.0) * 0.04;
 
-    // Gentle brightness breathing with sub-bass
-    col *= 0.85 + iSubBass * 0.12;
+    // Sub-bass brightness swell
+    col *= 0.70 + iSubBass * 0.45;
 
-    // Trace shimmer
-    float shimmer = (hash(gl_FragCoord.xy + iTime * 60.0) - 0.5) * iTreble * 0.025;
+    // Saturation lift on bass hits — pushes colors away from grey
+    float lum = dot(col, vec3(0.299, 0.587, 0.114));
+    col = mix(vec3(lum), col, 1.0 + iSubBass * 0.35);
+
+    // Treble shimmer
+    float shimmer = (hash(gl_FragCoord.xy + iTime * 60.0) - 0.5) * iTreble * 0.06;
     col += shimmer;
 
     // Vignette
@@ -132,19 +219,50 @@ window.addEventListener('resize', () => {
   uniforms.iResolution.value.set(window.innerWidth, window.innerHeight);
 });
 
-// ---------- Mouse tracking ----------
+// ---------- Mouse tracking + path history ----------
 const mouse = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
 const smoothMouse = { x: mouse.x, y: mouse.y };
 
-window.addEventListener('mousemove', e => {
-  mouse.x = e.clientX;
-  mouse.y = e.clientY;
-});
+const path = []; // [{ x, y, time }]  newest at end
+let lastPathSample = { x: -1e9, y: -1e9 };
+
+function maybeRecordPath(x, y) {
+  const dx = x - lastPathSample.x;
+  const dy = y - lastPathSample.y;
+  if (dx * dx + dy * dy < PATH_MIN_PX * PATH_MIN_PX) return;
+  lastPathSample = { x, y };
+  path.push({ x, y, time: performance.now() / 1000 });
+  if (path.length > PATH_LEN) path.shift();
+}
+
+function setPointer(x, y) {
+  mouse.x = x;
+  mouse.y = y;
+  maybeRecordPath(x, y);
+}
+
+window.addEventListener('mousemove', e => setPointer(e.clientX, e.clientY));
 window.addEventListener('touchmove', e => {
   const t = e.touches[0];
-  mouse.x = t.clientX;
-  mouse.y = t.clientY;
+  setPointer(t.clientX, t.clientY);
 }, { passive: true });
+
+function updatePathUniforms() {
+  const now = performance.now() / 1000;
+  // Drop entries past their TTL
+  while (path.length > 0 && now - path[0].time > PATH_TTL) path.shift();
+
+  const pr = renderer.getPixelRatio();
+  for (let i = 0; i < PATH_LEN; i++) {
+    if (i < path.length) {
+      uniforms.iMousePath.value[i].set(path[i].x * pr, path[i].y * pr);
+      uniforms.iMousePathAge.value[i] = now - path[i].time;
+    } else {
+      // Stale slot — position doesn't matter since age >= TTL kills the contribution
+      uniforms.iMousePathAge.value[i] = PATH_TTL + 1;
+    }
+  }
+}
 
 // ---------- Audio + FFT analysis ----------
 const audio = document.getElementById('audio');
@@ -194,10 +312,10 @@ function readBands() {
   const easeAsym = (cur, target, atk, rel) =>
     target > cur ? cur + (target - cur) * atk : cur + (target - cur) * rel;
 
-  subBassSmoothed = easeAsym(subBassSmoothed, subBass, 0.08, 0.025);
-  bassSmoothed    = easeAsym(bassSmoothed,    bass,    0.35, 0.08);
-  midSmoothed     = easeAsym(midSmoothed,     mid,     0.30, 0.08);
-  trebleSmoothed  = easeAsym(trebleSmoothed,  treble,  0.30, 0.08);
+  subBassSmoothed = easeAsym(subBassSmoothed, subBass, 0.22, 0.04);
+  bassSmoothed    = easeAsym(bassSmoothed,    bass,    0.45, 0.10);
+  midSmoothed     = easeAsym(midSmoothed,     mid,     0.50, 0.10);
+  trebleSmoothed  = easeAsym(trebleSmoothed,  treble,  0.55, 0.10);
 }
 
 // ---------- Player controls ----------
@@ -244,6 +362,8 @@ function tick() {
   smoothMouse.y += (mouse.y - smoothMouse.y) * 0.08;
   const pr = renderer.getPixelRatio();
   uniforms.iMouse.value.set(smoothMouse.x * pr, smoothMouse.y * pr);
+
+  updatePathUniforms();
 
   readBands();
   uniforms.iSubBass.value = subBassSmoothed;
