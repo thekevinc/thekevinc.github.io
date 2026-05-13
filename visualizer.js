@@ -13,7 +13,8 @@ const uniforms = {
   iTime:       { value: 0 },
   iResolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
   iMouse:      { value: new THREE.Vector2(window.innerWidth / 2, window.innerHeight / 2) },
-  iBass:       { value: 0 },
+  iSubBass:    { value: 0 }, // 0-130Hz, heavily smoothed — drives slow large-scale motion
+  iBass:       { value: 0 }, // 130-345Hz — drives subtle pulse
   iMid:        { value: 0 },
   iTreble:     { value: 0 },
 };
@@ -32,6 +33,7 @@ const fragmentShader = `
   uniform float iTime;
   uniform vec2 iResolution;
   uniform vec2 iMouse;
+  uniform float iSubBass;
   uniform float iBass;
   uniform float iMid;
   uniform float iTreble;
@@ -72,45 +74,49 @@ const fragmentShader = `
     m.y = -m.y;
     m.x *= iResolution.x / iResolution.y;
 
-    float t = iTime * 0.18 + iBass * 1.5;
+    // Pure ambient flow — geometry never reacts to audio, so it can't jerk.
+    // Audio only touches color/brightness below.
+    float t = iTime * 0.05;
 
-    // Domain-warped FBM with mouse attraction
     vec2 q = vec2(
       fbm(p * 1.4 + t * 0.3),
       fbm(p * 1.4 + vec2(5.2, 1.3) + t * 0.25)
     );
 
-    vec2 warp = 3.0 * q + (m - p) * (0.6 + iBass * 0.8);
+    vec2 warp = 2.5 * q;
 
     vec2 r = vec2(
-      fbm(p + warp + vec2(1.7, 9.2) + t * 0.4 + iMid * 0.5),
-      fbm(p + warp + vec2(8.3, 2.8) + t * 0.35 + iTreble * 0.5)
+      fbm(p + warp + vec2(1.7, 9.2) + t * 0.4),
+      fbm(p + warp + vec2(8.3, 2.8) + t * 0.35)
     );
 
-    float n = fbm(p + 3.5 * r);
+    float n = fbm(p + 3.0 * r);
 
-    // Palette: deep purple → magenta → cyan → gold, modulated by audio bands
-    vec3 cDeep    = vec3(0.05, 0.02, 0.18);
-    vec3 cMagenta = vec3(0.9, 0.25, 0.7);
-    vec3 cCyan    = vec3(0.15, 0.7, 0.95);
-    vec3 cGold    = vec3(1.0, 0.85, 0.4);
+    // Palette: near-black → deep blue → teal → soft green (relaxed)
+    vec3 cBlack = vec3(0.0, 0.015, 0.03);
+    vec3 cBlue  = vec3(0.02, 0.12, 0.28);
+    vec3 cTeal  = vec3(0.05, 0.40, 0.50);
+    vec3 cGreen = vec3(0.18, 0.65, 0.45);
 
-    vec3 col = mix(cDeep, cMagenta, smoothstep(0.25, 0.55, n));
-    col = mix(col, cCyan, smoothstep(0.55, 0.78, n) * (0.5 + iMid));
-    col = mix(col, cGold, smoothstep(0.78, 0.95, n) * (0.3 + iTreble * 1.2));
+    vec3 col = mix(cBlack, cBlue,  smoothstep(0.25, 0.55, n));
+    col      = mix(col,    cTeal,  smoothstep(0.55, 0.78, n) * (0.65 + iMid * 0.12));
+    col      = mix(col,    cGreen, smoothstep(0.78, 0.95, n) * (0.5 + iTreble * 0.18));
 
-    // Mouse glow
+    // --- Localized cursor effect ---
     float dToMouse = length(p - m);
-    col += vec3(1.0, 0.6, 0.95) * smoothstep(0.55, 0.0, dToMouse) * (0.15 + iBass * 0.3);
+    float cursorCore = exp(-dToMouse * 18.0);
+    float cursorHalo = exp(-dToMouse * 6.0);
+    col += vec3(0.55, 1.0, 0.85) * cursorCore * 0.55;
+    col += vec3(0.10, 0.55, 0.65) * cursorHalo * 0.20;
 
-    // Bass pulse (overall brightness)
-    col *= 0.55 + iBass * 0.55;
+    // Gentle brightness breathing with sub-bass
+    col *= 0.85 + iSubBass * 0.12;
 
-    // Treble shimmer (high-freq grain)
-    float shimmer = (hash(gl_FragCoord.xy + iTime * 60.0) - 0.5) * iTreble * 0.12;
+    // Trace shimmer
+    float shimmer = (hash(gl_FragCoord.xy + iTime * 60.0) - 0.5) * iTreble * 0.025;
     col += shimmer;
 
-    // Subtle vignette
+    // Vignette
     col *= 1.0 - 0.35 * dot(uv - 0.5, uv - 0.5);
 
     gl_FragColor = vec4(col, 1.0);
@@ -148,7 +154,13 @@ const nowplaying = document.getElementById('nowplaying');
 const startOverlay = document.getElementById('startOverlay');
 
 let audioCtx, analyser, dataArray;
-let bassSmoothed = 0, midSmoothed = 0, trebleSmoothed = 0;
+let subBassSmoothed = 0, bassSmoothed = 0, midSmoothed = 0, trebleSmoothed = 0;
+
+// FFT bin layout (44.1kHz sample rate, fftSize 1024 → ~43Hz per bin)
+const SUB_BASS_START = 1,  SUB_BASS_END = 3;    // ~43-130Hz   (kick / sub)
+const BASS_START     = 3,  BASS_END     = 8;    // ~130-345Hz  (body)
+const MID_START      = 8,  MID_END      = 80;   // ~345-3.4kHz
+const TREB_START     = 80, TREB_END     = 250;  // ~3.4-11kHz
 
 function initAudio() {
   if (audioCtx) return;
@@ -156,36 +168,36 @@ function initAudio() {
   const source = audioCtx.createMediaElementSource(audio);
   analyser = audioCtx.createAnalyser();
   analyser.fftSize = 1024;
-  analyser.smoothingTimeConstant = 0.7;
+  analyser.smoothingTimeConstant = 0.85; // heavier built-in smoothing
   source.connect(analyser);
   analyser.connect(audioCtx.destination);
   dataArray = new Uint8Array(analyser.frequencyBinCount);
+}
+
+function avgBins(start, end) {
+  let sum = 0;
+  for (let i = start; i < end; i++) sum += dataArray[i];
+  return sum / ((end - start) * 255);
 }
 
 function readBands() {
   if (!analyser) return;
   analyser.getByteFrequencyData(dataArray);
 
-  const n = dataArray.length;
-  const bassEnd = Math.floor(n * 0.06);
-  const midEnd  = Math.floor(n * 0.25);
-  const trebEnd = Math.floor(n * 0.6);
+  const subBass = avgBins(SUB_BASS_START, SUB_BASS_END);
+  const bass    = avgBins(BASS_START,     BASS_END);
+  const mid     = avgBins(MID_START,      MID_END);
+  const treble  = avgBins(TREB_START,     TREB_END);
 
-  let bass = 0, mid = 0, treble = 0;
-  for (let i = 0; i < bassEnd; i++) bass += dataArray[i];
-  for (let i = bassEnd; i < midEnd; i++) mid += dataArray[i];
-  for (let i = midEnd; i < trebEnd; i++) treble += dataArray[i];
+  // Sub-bass: very slow envelope — these drive the big movements, so we want
+  // gentle swells not flickers. Other bands: snappier for color/grain reactivity.
+  const easeAsym = (cur, target, atk, rel) =>
+    target > cur ? cur + (target - cur) * atk : cur + (target - cur) * rel;
 
-  bass   = bass   / (bassEnd * 255);
-  mid    = mid    / ((midEnd - bassEnd) * 255);
-  treble = treble / ((trebEnd - midEnd) * 255);
-
-  // Fast attack, slow release — feels musical
-  const attack = 0.55, release = 0.12;
-  const ease = (cur, target) => target > cur ? cur + (target - cur) * attack : cur + (target - cur) * release;
-  bassSmoothed   = ease(bassSmoothed, bass);
-  midSmoothed    = ease(midSmoothed, mid);
-  trebleSmoothed = ease(trebleSmoothed, treble);
+  subBassSmoothed = easeAsym(subBassSmoothed, subBass, 0.08, 0.025);
+  bassSmoothed    = easeAsym(bassSmoothed,    bass,    0.35, 0.08);
+  midSmoothed     = easeAsym(midSmoothed,     mid,     0.30, 0.08);
+  trebleSmoothed  = easeAsym(trebleSmoothed,  treble,  0.30, 0.08);
 }
 
 // ---------- Player controls ----------
@@ -234,9 +246,10 @@ function tick() {
   uniforms.iMouse.value.set(smoothMouse.x * pr, smoothMouse.y * pr);
 
   readBands();
-  uniforms.iBass.value   = bassSmoothed;
-  uniforms.iMid.value    = midSmoothed;
-  uniforms.iTreble.value = trebleSmoothed;
+  uniforms.iSubBass.value = subBassSmoothed;
+  uniforms.iBass.value    = bassSmoothed;
+  uniforms.iMid.value     = midSmoothed;
+  uniforms.iTreble.value  = trebleSmoothed;
 
   renderer.render(scene, camera);
   requestAnimationFrame(tick);
