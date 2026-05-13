@@ -3,13 +3,41 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Kevin Curtin</title>
-  <style>
-    body { margin: 0; background: #000; color: #fff; font-family: sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
-    h1 { text-align: center; }
-  </style>
+  <title>kevin c</title>
+  <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <h1>Coming soon</h1>
+  <canvas id="bg"></canvas>
+
+  <div class="content">
+    <h1>kevin c</h1>
+  </div>
+
+  <div class="nowplaying" id="nowplaying">
+    <div class="np-disc"></div>
+    <div class="np-text">
+      <span class="np-label">Now Playing</span>
+      <span class="np-title"><span class="artist">Martin Jarl —</span> Zoologiska</span>
+    </div>
+    <button class="np-btn" id="npBtn" aria-label="Play/pause">
+      <svg id="npIcon" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+    </button>
+  </div>
+
+  <div class="start-overlay" id="startOverlay">
+    <div class="play-icon"></div>
+    <div class="start-label">Click anywhere to begin</div>
+  </div>
+
+  <audio id="audio" src="zoologiska.mp3" preload="auto" loop crossorigin="anonymous"></audio>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
+      }
+    }
+  </script>
+  <script type="module" src="visualizer.js"></script>
 </body>
 </html>

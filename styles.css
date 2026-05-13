@@ -1,0 +1,186 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: #050508;
+  color: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+#bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+}
+
+.content {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  gap: 0.75rem;
+  pointer-events: none;
+  padding: 0 1.5rem;
+  text-align: center;
+}
+
+h1 {
+  font-size: clamp(2.75rem, 9vw, 7rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  background: linear-gradient(180deg, #fff 0%, rgba(255,255,255,0.6) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  text-shadow: 0 0 60px rgba(255,255,255,0.15);
+}
+
+.subtitle {
+  font-size: 0.85rem;
+  color: rgba(255,255,255,0.5);
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+}
+
+/* --- Start overlay --- */
+.start-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(5, 5, 8, 0.6);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 1rem;
+  cursor: pointer;
+  transition: opacity 0.6s ease;
+}
+.start-overlay.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+.start-overlay .play-icon {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.2s ease, border-color 0.2s ease;
+}
+.start-overlay:hover .play-icon {
+  transform: scale(1.08);
+  border-color: rgba(255,255,255,0.8);
+}
+.start-overlay .play-icon::after {
+  content: '';
+  width: 0;
+  height: 0;
+  border-left: 18px solid #fff;
+  border-top: 12px solid transparent;
+  border-bottom: 12px solid transparent;
+  margin-left: 4px;
+}
+.start-overlay .start-label {
+  font-size: 0.75rem;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.7);
+}
+
+/* --- Now-playing widget --- */
+.nowplaying {
+  position: fixed;
+  bottom: 1.25rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 0.6rem 1rem 0.6rem 0.6rem;
+  background: rgba(15, 15, 22, 0.55);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 999px;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.4);
+  max-width: calc(100vw - 2rem);
+}
+
+.np-disc {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #ff7ad9, #6b3fff 50%, #1a0033 100%);
+  flex-shrink: 0;
+  box-shadow: 0 0 14px rgba(180, 100, 255, 0.5);
+  animation: spin 6s linear infinite;
+  animation-play-state: paused;
+}
+.np-disc::after {
+  content: '';
+  position: absolute;
+  inset: 14px;
+  background: #050508;
+  border-radius: 50%;
+}
+.nowplaying.playing .np-disc { animation-play-state: running; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.np-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+.np-label {
+  font-size: 0.6rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.4);
+}
+.np-title {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: rgba(255,255,255,0.95);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 14rem;
+}
+.np-title .artist { color: rgba(255,255,255,0.6); }
+
+.np-btn {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.1);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease;
+  padding: 0;
+}
+.np-btn:hover { background: rgba(255,255,255,0.18); }
+.np-btn svg { width: 14px; height: 14px; fill: #fff; }
+
+@media (max-width: 480px) {
+  .np-title { max-width: 9rem; font-size: 0.75rem; }
+  .np-label { font-size: 0.55rem; }
+}

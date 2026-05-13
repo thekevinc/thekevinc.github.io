@@ -1,0 +1,12 @@
+{
+  "name": "thekevinc.github.io",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Personal portfolio — kevincurtin.dev",
+  "scripts": {
+    "dev": "serve -l 8000 ."
+  },
+  "devDependencies": {
+    "serve": "^14.2.4"
+  }
+}
