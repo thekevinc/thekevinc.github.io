@@ -21,6 +21,9 @@ const uniforms = {
   iMousePath:    { value: Array.from({ length: PATH_LEN }, () => new THREE.Vector2(0, 0)) },
   iMousePathAge: { value: new Array(PATH_LEN).fill(PATH_TTL + 1) },
   iPathTtl:      { value: PATH_TTL },
+  iSubFloor:    { value: 0.60 },
+  iSubStrength: { value: 0.15 },
+  iSubExp:      { value: 2.5  },
   iSubBass:    { value: 0 }, // 0-130Hz, heavily smoothed — drives slow large-scale motion
   iBass:       { value: 0 }, // 130-345Hz — drives subtle pulse
   iMid:        { value: 0 },
@@ -47,6 +50,9 @@ const fragmentShader = `
   uniform vec2 iMousePath[PATH_LEN];
   uniform float iMousePathAge[PATH_LEN];
   uniform float iPathTtl;
+  uniform float iSubFloor;
+  uniform float iSubStrength;
+  uniform float iSubExp;
   uniform float iSubBass;
   uniform float iBass;
   uniform float iMid;
@@ -170,8 +176,8 @@ const fragmentShader = `
     // ~0.10-0.22 and produce ZERO effect. The bassline/kick proper sits
     // 0.35+; a steep exponent compresses near-floor noise and keeps growing
     // through the loudest drops with no upper cap.
-    float bassDrive = pow(max(0.0, iSubBass - 0.25), 1.7);
-    float bassBreath = 1.0 + bassDrive * 0.38;
+    float bassDrive = pow(max(0.0, iSubBass - iSubFloor), iSubExp);
+    float bassBreath = 1.0 + bassDrive * iSubStrength;
     vec2 pNoise = (p + awayDir * pushAmt) * bassBreath;
 
     // --- Ambient flow, sampled at the displaced coord ---
