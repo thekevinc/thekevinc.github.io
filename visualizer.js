@@ -198,16 +198,23 @@ const fragmentShader = `
     vec2 pNoise = (pScene + awayDir * pushAmt * iPixelRatio) * bassBreath;
 
     // --- Ambient flow, sampled at the displaced coord ---
-    float t = iTime * 0.05;
+    // Quasiperiodic 2D flow vector: base drift + two slow sinusoidal wanders
+    // per axis. Incommensurate periods (~12s, ~20s, ~16s, ~28s) mean the
+    // direction cycles through all angles and never exactly repeats.
+    // Smoke holds a direction for several seconds then glides to another.
+    vec2 flow = vec2(
+      iTime * 0.040 + 0.55 * sin(iTime * 0.082) + 0.22 * sin(iTime * 0.137),
+      iTime * 0.034 + 0.50 * cos(iTime * 0.071) + 0.20 * cos(iTime * 0.113)
+    );
 
     vec2 q = vec2(
-      fbm(pNoise * 1.4 + t * 0.3),
-      fbm(pNoise * 1.4 + vec2(5.2, 1.3) + t * 0.25)
+      fbm(pNoise * 1.4 + flow * 0.30),
+      fbm(pNoise * 1.4 + vec2(5.2, 1.3) + flow * 0.25)
     );
     vec2 warp = 2.5 * q;
     vec2 r = vec2(
-      fbm(pNoise + warp + vec2(1.7, 9.2) + t * 0.4),
-      fbm(pNoise + warp + vec2(8.3, 2.8) + t * 0.35)
+      fbm(pNoise + warp + vec2(1.7, 9.2) + flow * 0.40),
+      fbm(pNoise + warp + vec2(8.3, 2.8) + flow * 0.35)
     );
     float n = fbm(pNoise + 3.0 * r);
 
